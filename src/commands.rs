@@ -1,19 +1,16 @@
 use serenity::{
     async_trait,
-    framework::standard::{macros::{command, group}, Command, CommandResult},
+    framework::standard::macros::group,
     model::{
         application::{command::CommandOptionType,
-        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}},
-        gateway::Ready, id::GuildId, prelude::*,
+        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::Member, id::{GuildId, RoleId}
     },
     prelude::*,
 };
-
-use serde_json::Value;
+use dotenvy::dotenv;
 use std::env;
-use dotenv::dotenv;
 
-use crate::dbms::{self, DBMS};
+use crate::dbms::DBMS;
 
 #[group]
 struct General;
@@ -36,16 +33,10 @@ impl EventHandler for Handler {
         );
 
         let _ = guild_id.create_application_command(&ctx.http, |cmd| {
-            cmd.name("ticket")
-                .description("Create or manage a ticket")
+            cmd.name("open")
+                .description("Open a ticket")
                 .create_option(|o| {
-                    o.name("option")
-                        .description("Command option")
-                        .kind(CommandOptionType::String)
-                        .required(true)
-                })
-                .create_option(|o| {
-                    o.name("name")
+                    o.name("title")
                         .description("Ticket name")
                         .kind(CommandOptionType::String)
                         .required(true)
@@ -54,10 +45,20 @@ impl EventHandler for Handler {
                     o.name("description")
                         .description("Ticket description")
                         .kind(CommandOptionType::String)
-                        .required(false)
+                        .required(true)
                 })
-        })
-        .await;
+        }).await;
+
+        let _ = guild_id.create_application_command(&ctx.http, |cmd| {
+            cmd.name("close")
+                .description("Close a ticket")
+                .create_option(|o| {
+                    o.name("id")
+                        .description("Ticket ID")
+                        .kind(CommandOptionType::Integer)
+                        .required(true)
+                })
+        }).await;
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -69,86 +70,82 @@ impl EventHandler for Handler {
 
 impl Handler {
     pub async fn handle_application_command(&self, ctx: &Context, command: &ApplicationCommandInteraction) {
+        let mut reply: String = String::new();
         match command.data.name.as_str() {
-            "ticket" => {
-                let find = |name: &str| -> Option<&Value> {
-                    command.data.options.iter()
-                        .find(|opt| opt.name == name)
-                        .and_then(|opt| opt.value.as_ref())
-                };
+            "open" => {
+                let title: String = self.get_option(&command, "title").await;
+                let description: String = self.get_option(&command, "description").await;
 
-                let option = match find("option").and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => {
-                        let _ = command.create_interaction_response(&ctx.http, |r| {
-                            r.kind(InteractionResponseType::ChannelMessageWithSource)
-                                .interaction_response_data(|m| m.content("Missing option."))
-                        }).await;
-                        return;
-                    }
-                };
-
-                let title = match find("name").and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => {
-                        let _ = command.create_interaction_response(&ctx.http, |r| {
-                            r.kind(InteractionResponseType::ChannelMessageWithSource)
-                                .interaction_response_data(|m| m.content("Missing ticket name."))
-                        }).await;
-                        return;
-                    }
-                };
-
-                let description = find("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("No description provided.");
-
-
-                let mut reply = String::new();
-
-                match option {
-                    "create" => {
-                        let result = self.dbms.insert_ticket(&command.user.id.to_string(), title, description, true).await;
-
-                        match result {
-                            Ok(_) => {
-                                println!("Created ticket {}.", title);
-                            },
-                            Err(e) => {
-                                println!("Failed to create ticket {}.", title);
-                            }
-                        }
-
-                        reply = format!("Created Ticket\n```{}\n\nDescription:\n{}```", title, description);
+                match self.dbms.insert_ticket(&command.user.id.to_string(), &title, &description).await {
+                    Ok(id) => {
+                        println!("Opened ticket {}. (#{})", title, id);
+                        reply = format!("Opened ticket (#{})\n```{}\n\nDescription:\n{}```", id, title, description);
                     },
-
-                    "view" => {
-                        reply = format!("```{}\n\nDescription:\n{}```", title, description); // TODO: take ID as param, search ticket in DB, display ticket
-                    },
-
-                    "close" => {
-                        reply = format!("# {}\n{}", title, description); // TODO: set ticket is_open to false
-                    },
-
-                    _ => {
-                        reply = format!("# {}\n{}", title, description);
+                    Err(e) => {
+                        println!("Failed to open ticket {}.\nError: {}", title, e);
+                        reply = format!("Failed to open ticket {}.", title);
                     }
                 }
+            }
 
-                let _ = command.create_interaction_response(&ctx.http, |r| {
-                    r.kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|m| m.content(reply))
-                }).await;
+            "close" => {
+                let mod_role_id: String = env::var("TEST_MOD_ROLE_ID").expect("Couldn't find TEST_MOD_ROLE_ID environment variable.");
+
+                let guild_id: GuildId = command.guild_id.unwrap();
+                let user_id: serenity::model::prelude::UserId = command.user.id;
+                let member: serenity::model::prelude::Member = guild_id.member(&ctx.http, user_id).await.unwrap();
+
+                if Handler::has_role(&member, RoleId(mod_role_id.parse::<u64>().unwrap())).await {
+                    let id: u32 = self.get_option(&command, "id").await.parse::<u32>().unwrap_or(u32::max_value());
+
+                    match self.dbms.close_ticket(id).await {
+                        Ok(_) => {
+                            reply = format!("Closed ticket #{}.", id);
+                        },
+                        Err(e) => {
+                            println!("Failed to close ticket #{}.\nError: {}", id, e);
+                        }
+                    }
+                } else {
+                    reply = format!("Only mods can close tickets.\nThis incident will be reported.");
+                }
+
+                println!("{}", reply);
+            }
+
+            "show" => {
+
             }
 
             _ => {
-                let _ = command
-                    .create_interaction_response(&ctx.http, |resp| {
-                        resp.kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|m| m.content("Unknown command"))
-                    })
-                    .await;
+                self.respond(&command, &ctx, "Unknown command.").await;
             }
         }
+
+        if reply != "" {
+            self.respond(command, ctx, &reply).await;
+        }
+    }
+
+    async fn respond(&self, command: &ApplicationCommandInteraction, ctx: &Context, reply: &str) {
+        let _ = command.create_interaction_response(&ctx.http, |r| {
+            r.kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|m| m.content(reply))
+        }).await;
+    }
+
+    async fn get_option(&self, command: &ApplicationCommandInteraction, option: &str) -> String {
+        let val = command.data.options.iter()
+                .find(|opt| opt.name == option)
+                .and_then(|opt| opt.value.as_ref());
+
+        match val {
+            Some(s) => s.clone().to_string(),
+            None => String::from("")
+        }
+    }
+
+    async fn has_role(member: &Member, role_id: RoleId) -> bool {
+        member.roles.contains(&role_id)
     }
 }

@@ -8,7 +8,6 @@ impl DBMS {
     pub async fn new(connection_string: &str) -> Result<Self, Error> {
         let (client, connection) = tokio_postgres::connect(connection_string, NoTls).await?;
 
-        // Spawn a new task to handle the connection
         tokio::spawn(async move {
             if let Err(e) = connection.await {
                 eprintln!("Connection error: {}", e);
@@ -32,20 +31,37 @@ impl DBMS {
         Ok(())
     }
 
-    pub async fn insert_ticket(&self, author: &str, title: &str, description: &str, is_open: bool) -> Result<(), Error> {
-        self.client.execute(
-            "INSERT INTO tickets (author, title, description, is_open) VALUES ($1, $2, $3, $4)",
-            &[&author, &title, &description, &is_open],
+    pub async fn insert_ticket(&self, author: &str, title: &str, description: &str) -> Result<u32, Error> {
+        let row = self.client.query_one(
+            "INSERT INTO tickets
+            (author, title, description, is_open)
+            VALUES ($1, $2, $3, true)
+            RETURNING id",
+            &[&author, &title, &description],
         ).await?;
+
+        let id: i32 = row.get(0);
+        let id: u32 = id as u32;
+        Ok(id)
+    }
+
+    pub async fn close_ticket(&self, id: u32) -> Result<(), Error> {
+        let a: i32 = id as i32;
+        self.client.execute(
+            "
+            UPDATE tickets
+            SET is_open = false
+            WHERE id = ($1)
+            ", &[&a]).await?;
         Ok(())
     }
 
-    pub async fn query_tickets(&self) -> Result<Vec<(i32, String)>, Error> {
+    pub async fn query_tickets(&self) -> Result<Vec<(u32, String)>, Error> {
         let rows = self.client.query("SELECT id, title FROM tickets", &[]).await?;
         let mut tickets = Vec::new();
 
         for row in rows {
-            let id: i32 = row.get(0);
+            let id: u32 = row.get(0);
             let title: String = row.get(1);
             tickets.push((id, title));
         }
