@@ -3,14 +3,16 @@ use serenity::{
     framework::standard::macros::group,
     model::{
         application::{command::CommandOptionType,
-        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::Member, id::{GuildId, RoleId}
+        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::Member, id::{GuildId, RoleId, UserId}
     },
     prelude::*,
 };
+use tokio_postgres::{Error};
 use dotenvy::dotenv;
-use std::env;
+use std::{env, u32};
 
 use crate::dbms::DBMS;
+use crate::ticket::Ticket;
 
 #[group]
 struct General;
@@ -37,15 +39,15 @@ impl EventHandler for Handler {
                 .description("Open a ticket")
                 .create_option(|o| {
                     o.name("title")
-                        .description("Ticket name")
-                        .kind(CommandOptionType::String)
-                        .required(true)
+                    .description("Ticket name")
+                    .kind(CommandOptionType::String)
+                    .required(true)
                 })
                 .create_option(|o| {
                     o.name("description")
-                        .description("Ticket description")
-                        .kind(CommandOptionType::String)
-                        .required(true)
+                    .description("Ticket description")
+                    .kind(CommandOptionType::String)
+                    .required(true)
                 })
         }).await;
 
@@ -54,10 +56,26 @@ impl EventHandler for Handler {
                 .description("Close a ticket")
                 .create_option(|o| {
                     o.name("id")
-                        .description("Ticket ID")
-                        .kind(CommandOptionType::Integer)
-                        .required(true)
+                    .description("Ticket ID")
+                    .kind(CommandOptionType::Integer)
+                    .required(true)
                 })
+        }).await;
+
+        let _ = guild_id.create_application_command(&ctx.http, |cmd| {
+            cmd.name("show")
+            .description("Show a ticket")
+            .create_option(|o| {
+                o.name("id")
+                .description("Ticket ID. Leave empty to show all open tickets.")
+                .kind(CommandOptionType::Integer)
+                .required(false)
+            })
+        }).await;
+
+        let _ = guild_id.create_application_command(&ctx.http, |cmd| {
+            cmd.name("SHOWALL")
+            .description("[MODS ONLY] SHOW ALL TICKETS")
         }).await;
     }
 
@@ -89,14 +107,10 @@ impl Handler {
             }
 
             "close" => {
-                let mod_role_id: String = env::var("TEST_MOD_ROLE_ID").expect("Couldn't find TEST_MOD_ROLE_ID environment variable.");
-
-                let guild_id: GuildId = command.guild_id.unwrap();
-                let user_id: serenity::model::prelude::UserId = command.user.id;
-                let member: serenity::model::prelude::Member = guild_id.member(&ctx.http, user_id).await.unwrap();
-
-                if Handler::has_role(&member, RoleId(mod_role_id.parse::<u64>().unwrap())).await {
-                    let id: u32 = self.get_option(&command, "id").await.parse::<u32>().unwrap_or(u32::max_value());
+                if Self::is_mod(&ctx, &command).await {
+                    let id: u32 = self.get_option(&command, "id")
+                    .await.parse::<u32>()
+                    .unwrap_or(u32::max_value());
 
                     match self.dbms.close_ticket(id).await {
                         Ok(_) => {
@@ -114,7 +128,29 @@ impl Handler {
             }
 
             "show" => {
+                let id: u32 = self.get_option(&command, "id")
+                .await.parse::<u32>()
+                .unwrap_or(u32::max_value());
 
+                let tickets: Vec<Ticket> = self.dbms.get_open_tickets().await.expect("Failed to get tickets.");
+
+                let a = tickets.iter().find(|ticket| ticket.id == id).and_then(|ticket| Result<ticket.id, Error>);
+
+                for ticket in tickets {
+                    if ticket.id == id {
+                        reply = Self::display_ticket(&ticket).await;
+                    }
+                }
+            }
+
+            "SHOWALL" => {
+                if Self::is_mod(&ctx, &command).await {
+                    let tickets: Vec<Ticket> = self.dbms.get_open_tickets().await.expect("Failed to get tickets.");
+
+                    for ticket in tickets {
+                        reply = format!("{}\n{}", reply, Self::display_ticket(&ticket).await);
+                    }
+                }
             }
 
             _ => {
@@ -147,5 +183,29 @@ impl Handler {
 
     async fn has_role(member: &Member, role_id: RoleId) -> bool {
         member.roles.contains(&role_id)
+    }
+
+    async fn is_mod(ctx: &Context, command: &ApplicationCommandInteraction) -> bool {
+        let mod_role_id: RoleId = RoleId(env::var("TEST_MOD_ROLE_ID")
+        .expect("Couldn't find TEST_MOD_ROLE_ID environment variable.")
+        .parse::<u64>()
+        .unwrap());
+
+        let guild_id: GuildId = command.guild_id.unwrap();
+        let user_id: UserId = command.user.id;
+        let member: Member = guild_id.member(&ctx.http, user_id).await.unwrap();
+
+
+        Self::has_role(&member, mod_role_id).await
+    }
+
+    async fn display_ticket(ticket: &Ticket) -> String {
+        let is_open_emoji= if ticket.is_open {
+            ":white_check_mark:"
+        } else {
+            ":red_cross:"
+        };
+
+        format!("### (#{}): __{}__\nAuthor: {}\n\nDescription:\n{}\n\nopen: {}", ticket.id, ticket.title, ticket.author, ticket.description, is_open_emoji)
     }
 }

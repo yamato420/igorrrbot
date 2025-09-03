@@ -8,6 +8,7 @@ use tokio_postgres::{Error};
 
 mod dbms;
 mod commands;
+mod ticket;
 
 use commands::GENERAL_GROUP;
 
@@ -18,7 +19,12 @@ use crate::{commands::*, dbms::DBMS};
 async fn main() -> Result<(), Error> {
     dotenv().ok();
 
-    let dbms: DBMS = DBMS::new("host=localhost user=postgres password=monkers dbname=igorrrbot").await?;
+    let db_host: String = env::var("DB_HOST").expect("Couldn't find DB_HOST environment variable.");
+    let db_user: String = env::var("DB_USER").expect("Couldn't find DB_USER environment variable.");
+    let db_password: String = env::var("DB_PASSWORD").expect("Couldn't find DB_PASSWORD environment variable.");
+    let db_name: String = env::var("DB_NAME").expect("Couldn't find DB_NAME environment variable.");
+
+    let dbms: DBMS = DBMS::new(&format!("host={} user={} password={} dbname={}", db_host, db_user, db_password, db_name)).await?;
     dbms.create_table().await?;
 
     // Required env vars: BOT_TOKEN, TEST_GUILD_ID, TEST_MOD_ROLE_ID

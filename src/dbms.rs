@@ -1,5 +1,7 @@
 use tokio_postgres::{Client, NoTls, Error};
 
+use crate::ticket::Ticket;
+
 pub struct DBMS {
     client: Client,
 }
@@ -36,8 +38,8 @@ impl DBMS {
             "INSERT INTO tickets
             (author, title, description, is_open)
             VALUES ($1, $2, $3, true)
-            RETURNING id",
-            &[&author, &title, &description],
+            RETURNING id
+            ", &[&author, &title, &description],
         ).await?;
 
         let id: i32 = row.get(0);
@@ -56,14 +58,25 @@ impl DBMS {
         Ok(())
     }
 
-    pub async fn query_tickets(&self) -> Result<Vec<(u32, String)>, Error> {
-        let rows = self.client.query("SELECT id, title FROM tickets", &[]).await?;
-        let mut tickets = Vec::new();
+    pub async fn get_open_tickets(&self) -> Result<Vec<Ticket>, Error> {
+        let rows = self.client.query("
+            SELECT * FROM tickets
+            WHERE is_open = true
+            ", &[]).await?;
+
+        let mut tickets: Vec<Ticket> = Vec::new();
 
         for row in rows {
-            let id: u32 = row.get(0);
-            let title: String = row.get(1);
-            tickets.push((id, title));
+            let id: i32 = row.get(0);
+            let id: u32 = id as u32;
+
+            tickets.push(Ticket {
+                id: id,
+                author: row.get(1),
+                title: row.get(2),
+                description: row.get(3),
+                is_open: row.get(4)
+            });
         }
 
         Ok(tickets)
