@@ -3,17 +3,14 @@ use serenity::{
     framework::standard::macros::group,
     model::{
         application::{command::CommandOptionType,
-        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}},
-        gateway::Ready, id::GuildId,
+        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::Member, id::{GuildId, RoleId}
     },
     prelude::*,
 };
+use dotenvy::dotenv;
+use std::env;
 
-use serde_json::Value;
-use std::{env, result};
-use dotenv::dotenv;
-
-use crate::dbms::{self, DBMS};
+use crate::dbms::DBMS;
 
 #[group]
 struct General;
@@ -48,7 +45,7 @@ impl EventHandler for Handler {
                     o.name("description")
                         .description("Ticket description")
                         .kind(CommandOptionType::String)
-                        .required(false)
+                        .required(true)
                 })
         }).await;
 
@@ -73,81 +70,82 @@ impl EventHandler for Handler {
 
 impl Handler {
     pub async fn handle_application_command(&self, ctx: &Context, command: &ApplicationCommandInteraction) {
-        let find = |name: &str| -> Option<&Value> {
-            command.data.options.iter()
-                .find(|opt| opt.name == name)
-                .and_then(|opt| opt.value.as_ref())
-        };
-
+        let mut reply: String = String::new();
         match command.data.name.as_str() {
             "open" => {
-                let mut reply = String::new();
+                let title: String = self.get_option(&command, "title").await;
+                let description: String = self.get_option(&command, "description").await;
 
-                let title = match find("title").and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => {
-                        self.respond(command, ctx, "Missing ticket title.").await;
-                        return;
-                    }
-                };
-
-                let description = find("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("No description provided.");
-
-                let result = self.dbms.insert_ticket(&command.user.id.to_string(), title, description, true).await;
-                match result {
+                match self.dbms.insert_ticket(&command.user.id.to_string(), &title, &description).await {
                     Ok(id) => {
                         println!("Opened ticket {}. (#{})", title, id);
                         reply = format!("Opened ticket (#{})\n```{}\n\nDescription:\n{}```", id, title, description);
                     },
                     Err(e) => {
                         println!("Failed to open ticket {}.\nError: {}", title, e);
+                        reply = format!("Failed to open ticket {}.", title);
                     }
                 }
-
-                self.respond(command, ctx, &reply).await;
             }
 
             "close" => {
-                let mut reply = String::new();
+                let mod_role_id: String = env::var("TEST_MOD_ROLE_ID").expect("Couldn't find TEST_MOD_ROLE_ID environment variable.");
 
-                let id = match find("id").and_then(|v| v.as_i64()) {
-                    Some(n) if n >= 0 && n <= u32::MAX as i64 => n as u32,
-                    _ => {
-                        self.respond(command, ctx, "Invalid ID.").await;
-                        return;
+                let guild_id: GuildId = command.guild_id.unwrap();
+                let user_id: serenity::model::prelude::UserId = command.user.id;
+                let member: serenity::model::prelude::Member = guild_id.member(&ctx.http, user_id).await.unwrap();
+
+                if Handler::has_role(&member, RoleId(mod_role_id.parse::<u64>().unwrap())).await {
+                    let id: u32 = self.get_option(&command, "id").await.parse::<u32>().unwrap_or(u32::max_value());
+
+                    match self.dbms.close_ticket(id).await {
+                        Ok(_) => {
+                            reply = format!("Closed ticket #{}.", id);
+                        },
+                        Err(e) => {
+                            println!("Failed to close ticket #{}.\nError: {}", id, e);
+                        }
                     }
-                };
-
-                let result = self.dbms.close_ticket(id).await;
-
-                match result {
-                    Ok(_) => {
-                        reply = format!("Closed ticket #{}.", id);
-                    },
-                    Err(e) => {
-                        println!("Failed to close ticket #{}.\nError: {}", id, e);
-                    }
+                } else {
+                    reply = format!("Only mods can close tickets.\nThis incident will be reported.");
                 }
-                self.respond(command, ctx, &reply).await
+
+                println!("{}", reply);
+            }
+
+            "show" => {
+
             }
 
             _ => {
-                let _ = command
-                    .create_interaction_response(&ctx.http, |resp| {
-                        resp.kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|m| m.content("Unknown command"))
-                    })
-                    .await;
+                self.respond(&command, &ctx, "Unknown command.").await;
             }
+        }
+
+        if reply != "" {
+            self.respond(command, ctx, &reply).await;
         }
     }
 
-    pub async fn respond(&self, command: &ApplicationCommandInteraction, ctx: &Context, reply: &str) {
+    async fn respond(&self, command: &ApplicationCommandInteraction, ctx: &Context, reply: &str) {
         let _ = command.create_interaction_response(&ctx.http, |r| {
             r.kind(InteractionResponseType::ChannelMessageWithSource)
                 .interaction_response_data(|m| m.content(reply))
         }).await;
+    }
+
+    async fn get_option(&self, command: &ApplicationCommandInteraction, option: &str) -> String {
+        let val = command.data.options.iter()
+                .find(|opt| opt.name == option)
+                .and_then(|opt| opt.value.as_ref());
+
+        match val {
+            Some(s) => s.clone().to_string(),
+            None => String::from("")
+        }
+    }
+
+    async fn has_role(member: &Member, role_id: RoleId) -> bool {
+        member.roles.contains(&role_id)
     }
 }

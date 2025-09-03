@@ -31,13 +31,13 @@ impl DBMS {
         Ok(())
     }
 
-    pub async fn insert_ticket(&self, author: &str, title: &str, description: &str, is_open: bool) -> Result<u32, Error> {
+    pub async fn insert_ticket(&self, author: &str, title: &str, description: &str) -> Result<u32, Error> {
         let row = self.client.query_one(
             "INSERT INTO tickets
             (author, title, description, is_open)
-            VALUES ($1, $2, $3, $4)
+            VALUES ($1, $2, $3, true)
             RETURNING id",
-            &[&author, &title, &description, &is_open],
+            &[&author, &title, &description],
         ).await?;
 
         let id: i32 = row.get(0);
@@ -46,12 +46,13 @@ impl DBMS {
     }
 
     pub async fn close_ticket(&self, id: u32) -> Result<(), Error> {
+        let a: i32 = id as i32;
         self.client.execute(
             "
             UPDATE tickets
             SET is_open = false
             WHERE id = ($1)
-            ", &[&id]).await?;
+            ", &[&a]).await?;
         Ok(())
     }
 
