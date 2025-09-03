@@ -30,7 +30,7 @@ async fn main() -> Result<(), Error> {
     // Required env vars: BOT_TOKEN, TEST_GUILD_ID, TEST_MOD_ROLE_ID
     let token: String = env::var("BOT_TOKEN").expect("Couldn't find BOT_TOKEN environment variable.");
     let handler: Handler = Handler { dbms };
-    let framework: StandardFramework = StandardFramework::new().configure(|c| c.prefix("!")).group(&GENERAL_GROUP);
+    let framework: StandardFramework = StandardFramework::new().group(&GENERAL_GROUP);
 
     let intents: GatewayIntents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::GUILDS | GatewayIntents::DIRECT_MESSAGES;
     let mut client: Client = Client::builder(&token, intents)
@@ -39,8 +39,8 @@ async fn main() -> Result<(), Error> {
         .await
         .expect("Couldn't create client.");
 
-    if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
+    if let Err(e) = client.start().await {
+        eprintln!("Client error: {:?}", e);
     }
 
     Ok(())

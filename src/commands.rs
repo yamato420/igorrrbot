@@ -7,7 +7,6 @@ use serenity::{
     },
     prelude::*,
 };
-use tokio_postgres::{Error};
 use dotenvy::dotenv;
 use std::{env, u32};
 
@@ -27,7 +26,7 @@ impl EventHandler for Handler {
         println!("{} is connected!", ready.user.name);
 
         dotenv().ok();
-        let guild_id = GuildId(
+        let guild_id: GuildId = GuildId(
             env::var("TEST_GUILD_ID")
                 .expect("Couldn't find TEST_GUILD_ID environment variable.")
                 .parse::<u64>()
@@ -67,15 +66,20 @@ impl EventHandler for Handler {
             .description("Show a ticket")
             .create_option(|o| {
                 o.name("id")
-                .description("Ticket ID. Leave empty to show all open tickets.")
+                .description("Ticket ID.")
                 .kind(CommandOptionType::Integer)
-                .required(false)
+                .required(true)
             })
         }).await;
 
         let _ = guild_id.create_application_command(&ctx.http, |cmd| {
-            cmd.name("SHOWALL")
-            .description("[MODS ONLY] SHOW ALL TICKETS")
+            cmd.name("list")
+            .description("[MODS ONLY] List open tickets")
+        }).await;
+
+        let _ = guild_id.create_application_command(&ctx.http, |cmd| {
+            cmd.name("listall")
+            .description("[MODS ONLY] List all tickets")
         }).await;
     }
 
@@ -91,16 +95,25 @@ impl Handler {
         let mut reply: String = String::new();
         match command.data.name.as_str() {
             "open" => {
-                let title: String = self.get_option(&command, "title").await;
-                let description: String = self.get_option(&command, "description").await;
+                let author: String = command.user.id.to_string();
+                let title: String = String::from(self.get_option(&command, "title").await.trim_matches('"'));
+                let description: String = String::from(self.get_option(&command, "description").await.trim_matches('"'));
 
-                match self.dbms.insert_ticket(&command.user.id.to_string(), &title, &description).await {
+                match self.dbms.insert_ticket(&author, &title, &description).await {
                     Ok(id) => {
+                        let ticket: Ticket = Ticket {
+                            id: id,
+                            author: author,
+                            title: title.clone(),
+                            description: description,
+                            is_open: true
+                        };
+
                         println!("Opened ticket {}. (#{})", title, id);
-                        reply = format!("Opened ticket (#{})\n```{}\n\nDescription:\n{}```", id, title, description);
+                        reply = Self::display_ticket(&ticket).await;
                     },
                     Err(e) => {
-                        println!("Failed to open ticket {}.\nError: {}", title, e);
+                        eprintln!("Failed to open ticket {}.\nError: {}", title, e);
                         reply = format!("Failed to open ticket {}.", title);
                     }
                 }
@@ -114,42 +127,65 @@ impl Handler {
 
                     match self.dbms.close_ticket(id).await {
                         Ok(_) => {
+                            println!("Closed ticket #{}.", id);
                             reply = format!("Closed ticket #{}.", id);
                         },
                         Err(e) => {
-                            println!("Failed to close ticket #{}.\nError: {}", id, e);
+                            eprintln!("Failed to close ticket #{}.\nError: {}", id, e);
+                            reply = format!("Failed to close ticket #{}.", id);
                         }
                     }
                 } else {
-                    reply = format!("Only mods can close tickets.\nThis incident will be reported.");
+                    reply = String::from("Only mods can close tickets.\nThis incident will be reported.");
                 }
-
-                println!("{}", reply);
             }
 
             "show" => {
                 let id: u32 = self.get_option(&command, "id")
-                .await.parse::<u32>()
-                .unwrap_or(u32::max_value());
+                .await
+                .parse::<u32>()
+                .unwrap();
 
-                let tickets: Vec<Ticket> = self.dbms.get_open_tickets().await.expect("Failed to get tickets.");
+                let tickets: Vec<Ticket> = self.dbms.get_tickets(false).await.expect("Failed to get tickets.");
 
-                let a = tickets.iter().find(|ticket| ticket.id == id).and_then(|ticket| Result<ticket.id, Error>);
-
-                for ticket in tickets {
-                    if ticket.id == id {
-                        reply = Self::display_ticket(&ticket).await;
+                if tickets.iter().any(|t| t.id == id) {
+                    for ticket in tickets {
+                        if ticket.id == id {
+                            reply = Self::display_ticket(&ticket).await;
+                        }
                     }
+                } else {
+                    reply = format!("Invalid ticket ID.");
                 }
             }
 
-            "SHOWALL" => {
+            "list" => {
                 if Self::is_mod(&ctx, &command).await {
-                    let tickets: Vec<Ticket> = self.dbms.get_open_tickets().await.expect("Failed to get tickets.");
+                    let tickets: Vec<Ticket> = self.dbms.get_tickets(true).await.expect("Failed to get tickets.");
 
                     for ticket in tickets {
-                        reply = format!("{}\n{}", reply, Self::display_ticket(&ticket).await);
+                        reply = format!("{}\n(#{}): {}", reply, ticket.id, ticket.title);
                     }
+                } else {
+                    reply = String::from("Only mods can list open tickets.\nThis incident will be reported.");
+                }
+            }
+
+            "listall" => {
+                if Self::is_mod(&ctx, &command).await {
+                    let tickets: Vec<Ticket> = self.dbms.get_tickets(false).await.expect("Failed to get tickets.");
+
+                    for ticket in tickets {
+                        let is_open_emoji: &str = if ticket.is_open {
+                            ":white_check_mark:"
+                        } else {
+                            ":x:"
+                        };
+
+                        reply = format!("{}\n(#{}): {} {}", reply, ticket.id, ticket.title, is_open_emoji);
+                    }
+                } else {
+                    reply = String::from("Only mods can list all tickets.\nThis incident will be reported.");
                 }
             }
 
@@ -158,9 +194,12 @@ impl Handler {
             }
         }
 
-        if reply != "" {
-            self.respond(command, ctx, &reply).await;
-        }
+        self.respond(command, ctx, if reply != "" {
+            &reply
+        } else {
+            eprintln!("Error: No response was created. Command: ({} {:?})", &command.data.name, &command.data.options);
+            "Error :("
+        }).await;
     }
 
     async fn respond(&self, command: &ApplicationCommandInteraction, ctx: &Context, reply: &str) {
@@ -176,7 +215,7 @@ impl Handler {
                 .and_then(|opt| opt.value.as_ref());
 
         match val {
-            Some(s) => s.clone().to_string(),
+            Some(s) => s.to_string(),
             None => String::from("")
         }
     }
@@ -189,7 +228,7 @@ impl Handler {
         let mod_role_id: RoleId = RoleId(env::var("TEST_MOD_ROLE_ID")
         .expect("Couldn't find TEST_MOD_ROLE_ID environment variable.")
         .parse::<u64>()
-        .unwrap());
+        .expect("TEST_MOD_ROLE_ID must be a u64"));
 
         let guild_id: GuildId = command.guild_id.unwrap();
         let user_id: UserId = command.user.id;
@@ -200,12 +239,12 @@ impl Handler {
     }
 
     async fn display_ticket(ticket: &Ticket) -> String {
-        let is_open_emoji= if ticket.is_open {
+        let is_open_emoji: String = String::from(if ticket.is_open {
             ":white_check_mark:"
         } else {
-            ":red_cross:"
-        };
+            ":x:"
+        });
 
-        format!("### (#{}): __{}__\nAuthor: {}\n\nDescription:\n{}\n\nopen: {}", ticket.id, ticket.title, ticket.author, ticket.description, is_open_emoji)
+        format!("### (#{}): __{}__\nAuthor: <@{}>\n\nDescription:\n{}\n\nopen: {}", ticket.id, ticket.title, ticket.author, ticket.description, is_open_emoji)
     }
 }
