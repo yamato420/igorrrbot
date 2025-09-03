@@ -1,4 +1,4 @@
-use tokio_postgres::{Client, NoTls, Error};
+use tokio_postgres::{Client, Error, NoTls, Row};
 
 use crate::ticket::Ticket;
 
@@ -21,21 +21,23 @@ impl DBMS {
 
     pub async fn create_table(&self) -> Result<(), Error> {
         self.client.execute(
-            "CREATE TABLE IF NOT EXISTS tickets (
-                id SERIAL PRIMARY KEY,
-                author VARCHAR NOT NULL,
-                title VARCHAR NOT NULL,
-                description VARCHAR NOT NULL,
-                is_open BOOLEAN NOT NULL
-                )",
+            "
+            CREATE TABLE IF NOT EXISTS tickets (
+            id SERIAL PRIMARY KEY,
+            author VARCHAR NOT NULL,
+            title VARCHAR NOT NULL,
+            description VARCHAR NOT NULL,
+            is_open BOOLEAN NOT NULL
+            )",
             &[],
         ).await?;
         Ok(())
     }
 
     pub async fn insert_ticket(&self, author: &str, title: &str, description: &str) -> Result<u32, Error> {
-        let row = self.client.query_one(
-            "INSERT INTO tickets
+        let row: Row = self.client.query_one(
+            "
+            INSERT INTO tickets
             (author, title, description, is_open)
             VALUES ($1, $2, $3, true)
             RETURNING id
@@ -54,21 +56,28 @@ impl DBMS {
             UPDATE tickets
             SET is_open = false
             WHERE id = ($1)
-            ", &[&a]).await?;
+            ",
+            &[&a]).await?;
         Ok(())
     }
 
-    pub async fn get_open_tickets(&self) -> Result<Vec<Ticket>, Error> {
-        let rows = self.client.query("
+    pub async fn get_tickets(&self, show_only_open_tickets: bool) -> Result<Vec<Ticket>, Error> {
+        let statement: &str = if show_only_open_tickets {
+            "
             SELECT * FROM tickets
             WHERE is_open = true
-            ", &[]).await?;
+            "
+        } else {
+            "
+            SELECT * FROM tickets
+            "
+        };
 
+        let rows: Vec<Row> = self.client.query(statement, &[]).await?;
         let mut tickets: Vec<Ticket> = Vec::new();
 
         for row in rows {
-            let id: i32 = row.get(0);
-            let id: u32 = id as u32;
+            let id: u32 = row.get::<_, i32>(0) as u32;
 
             tickets.push(Ticket {
                 id: id,
