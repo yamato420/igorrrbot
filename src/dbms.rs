@@ -1,4 +1,6 @@
-use tokio_postgres::{Client, NoTls, Error};
+use tokio_postgres::{Client, Error, NoTls, Row};
+
+use crate::ticket::Ticket;
 
 pub struct DBMS {
     client: Client,
@@ -19,25 +21,27 @@ impl DBMS {
 
     pub async fn create_table(&self) -> Result<(), Error> {
         self.client.execute(
-            "CREATE TABLE IF NOT EXISTS tickets (
-                id SERIAL PRIMARY KEY,
-                author VARCHAR NOT NULL,
-                title VARCHAR NOT NULL,
-                description VARCHAR NOT NULL,
-                is_open BOOLEAN NOT NULL
-                )",
+            "
+            CREATE TABLE IF NOT EXISTS tickets (
+            id SERIAL PRIMARY KEY,
+            author VARCHAR NOT NULL,
+            title VARCHAR NOT NULL,
+            description VARCHAR NOT NULL,
+            is_open BOOLEAN NOT NULL
+            )",
             &[],
         ).await?;
         Ok(())
     }
 
     pub async fn insert_ticket(&self, author: &str, title: &str, description: &str) -> Result<u32, Error> {
-        let row = self.client.query_one(
-            "INSERT INTO tickets
+        let row: Row = self.client.query_one(
+            "
+            INSERT INTO tickets
             (author, title, description, is_open)
             VALUES ($1, $2, $3, true)
-            RETURNING id",
-            &[&author, &title, &description],
+            RETURNING id
+            ", &[&author, &title, &description],
         ).await?;
 
         let id: i32 = row.get(0);
@@ -52,18 +56,36 @@ impl DBMS {
             UPDATE tickets
             SET is_open = false
             WHERE id = ($1)
-            ", &[&a]).await?;
+            ",
+            &[&a]).await?;
         Ok(())
     }
 
-    pub async fn query_tickets(&self) -> Result<Vec<(u32, String)>, Error> {
-        let rows = self.client.query("SELECT id, title FROM tickets", &[]).await?;
-        let mut tickets = Vec::new();
+    pub async fn get_tickets(&self, show_only_open_tickets: bool) -> Result<Vec<Ticket>, Error> {
+        let statement: &str = if show_only_open_tickets {
+            "
+            SELECT * FROM tickets
+            WHERE is_open = true
+            "
+        } else {
+            "
+            SELECT * FROM tickets
+            "
+        };
+
+        let rows: Vec<Row> = self.client.query(statement, &[]).await?;
+        let mut tickets: Vec<Ticket> = Vec::new();
 
         for row in rows {
-            let id: u32 = row.get(0);
-            let title: String = row.get(1);
-            tickets.push((id, title));
+            let id: u32 = row.get::<_, i32>(0) as u32;
+
+            tickets.push(Ticket {
+                id: id,
+                author: row.get(1),
+                title: row.get(2),
+                description: row.get(3),
+                is_open: row.get(4)
+            });
         }
 
         Ok(tickets)
