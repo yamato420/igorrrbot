@@ -41,7 +41,8 @@ impl DBMS {
             (author, title, description, is_open)
             VALUES ($1, $2, $3, true)
             RETURNING id
-            ", &[&author, &title, &description],
+            ", 
+            &[&author, &title, &description],
         ).await?;
 
         let id: i32 = row.get(0);

@@ -112,7 +112,7 @@ impl EventHandler for Handler {
                 builder.add_permission(mod_perm);
 
                 everyone_perm
-                    .id(*guild_id.as_u64())
+                    .id(guild_id.into())
                     .kind(CommandPermissionType::Role)
                     .permission(false);
 
@@ -179,12 +179,12 @@ impl Handler {
                         let channel: ChannelId = Self::create_ticket_channel(guild_id, category_id, &channel_name, allowed_users, &ctx).await.expect("Failed to create channel");
                         let _ = channel.say(&ctx.http, Self::display_ticket(&ticket).await).await;
 
-                        println!("Opened ticket (#{}): {}.", id, title);
                         reply = format!("Opened ticket (#{}): {}.", id, title);
+                        println!("{}", reply);
                     },
                     Err(e) => {
-                        eprintln!("Failed to open ticket {}.\nError: {}", title, e);
                         reply = format!("Failed to open ticket {}.", title);
+                        eprintln!("{}\n{}", reply, e);
                     }
                 }
             }
@@ -197,12 +197,12 @@ impl Handler {
 
                     match self.dbms.close_ticket(id).await {
                         Ok(_) => {
-                            println!("Closed ticket #{}.", id);
                             reply = format!("Closed ticket #{}.", id);
+                            println!("{}", reply);
                         },
                         Err(e) => {
-                            eprintln!("Failed to close ticket #{}.\nError: {}", id, e);
                             reply = format!("Failed to close ticket #{}.", id);
+                            eprintln!("{}\n{}", reply, e);
                         }
                     }
                 } else {
