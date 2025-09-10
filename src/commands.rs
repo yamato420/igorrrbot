@@ -2,7 +2,7 @@ use regex::Regex;
 use serenity::{
     async_trait, builder::CreateApplicationCommandPermissionData, framework::standard::macros::group, model::{
         application::{command::CommandOptionType,
-        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::{Guild, Member}, id::{ChannelId, CommandId, GuildId, RoleId, UserId}, prelude::{command::CommandPermissionType, ChannelType, GuildChannel, PermissionOverwrite, PermissionOverwriteType}, Permissions
+        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::{Guild, Member}, id::{ChannelId, CommandId, GuildId, RoleId, UserId}, interactions::InteractionApplicationCommandCallbackDataFlags, prelude::{command::CommandPermissionType, ChannelType, GuildChannel, PermissionOverwrite, PermissionOverwriteType}, Permissions
     }, prelude::*
 };
 use dotenvy::dotenv;
@@ -45,7 +45,7 @@ impl EventHandler for Handler {
         });
 
         let _ = guild_id.create_application_command(&ctx.http, |cmd| {
-            cmd.name("open")
+            cmd.name("ticket")
                 .description("Open a ticket")
                 .create_option(|o| {
                     o.name("title")
@@ -69,7 +69,7 @@ impl EventHandler for Handler {
 
         let _ = guild_id.create_application_command(&ctx.http, |cmd| {
             cmd.name("close")
-                .description("Close a ticket")
+                .description("[MODS ONLY] Close a ticket")
                 .create_option(|o| {
                     o.name("id")
                     .description("Ticket ID")
@@ -131,10 +131,9 @@ impl EventHandler for Handler {
 impl Handler {
     pub async fn handle_application_command(&self, ctx: &Context, command: &ApplicationCommandInteraction) {
         dotenv().ok();
-        let mut reply: String = String::new();
 
         match command.data.name.as_str() {
-            "open" => {
+            "ticket" => {
                 let author: String = command.user.id.to_string();
                 let title: String = String::from(self.get_option(&command, "title").await.trim_matches('"'));
                 let description: String = String::from(self.get_option(&command, "description").await.trim_matches('"'));
@@ -179,12 +178,10 @@ impl Handler {
                         let channel: ChannelId = Self::create_ticket_channel(guild_id, category_id, &channel_name, allowed_users, &ctx).await.expect("Failed to create channel");
                         let _ = channel.say(&ctx.http, Self::display_ticket(&ticket).await).await;
 
-                        reply = format!("Opened ticket (#{}): {}.", id, title);
-                        println!("{}", reply);
+                        Self::respond_eph(&self, ctx, &command, format!("Opened ticket (#{}): {}.", id, title)).await;
                     },
-                    Err(e) => {
-                        reply = format!("Failed to open ticket {}.", title);
-                        eprintln!("{}\n{}", reply, e);
+                    Err(_) => {
+                        Self::respond_eph(&self, ctx, &command, format!("Failed to open ticket {}.", title)).await;
                     }
                 }
             }
@@ -196,17 +193,20 @@ impl Handler {
                         .unwrap_or(u32::max_value());
 
                     match self.dbms.close_ticket(id).await {
-                        Ok(_) => {
-                            reply = format!("Closed ticket #{}.", id);
-                            println!("{}", reply);
+                        Ok(result) => {
+                            if result {
+                                Self::respond_eph(&self, ctx, &command, format!("Closed ticket #{}.", id)).await;
+
+                            } else {
+                                Self::respond_eph(&self, ctx, &command, format!("Invalid ticket ID.")).await;
+                            }
                         },
-                        Err(e) => {
-                            reply = format!("Failed to close ticket #{}.", id);
-                            eprintln!("{}\n{}", reply, e);
+                        Err(_) => {
+                            Self::respond_eph(&self, ctx, &command, format!("Failed to close ticket #{}.", id)).await;
                         }
                     }
                 } else {
-                    reply = String::from("Only mods can close tickets.\nThis incident will be reported.");
+                    Self::respond_eph(&self, ctx, &command, String::from("Only mods can close tickets.\nThis incident will be reported.")).await;
                 }
             }
 
@@ -221,29 +221,32 @@ impl Handler {
                 if tickets.iter().any(|t| t.id == id) {
                     for ticket in tickets {
                         if ticket.id == id {
-                            reply = Self::display_ticket(&ticket).await;
+                            Self::respond_eph(&self, ctx, &command, Self::display_ticket(&ticket).await).await;
                         }
                     }
                 } else {
-                    reply = format!("Invalid ticket ID.");
+                    Self::respond_eph(&self, ctx, &command, format!("Invalid ticket ID.")).await;
                 }
             }
 
             "list" => {
                 if Self::is_mod(&ctx, &command).await {
                     let tickets: Vec<Ticket> = self.dbms.get_tickets(true).await.expect("Failed to get tickets");
+                    let mut ticket_list_message: String = String::new();
 
                     for ticket in tickets {
-                        reply = format!("{}\n(#{}): {}", reply, ticket.id, ticket.title);
+                        ticket_list_message = format!("{}\n(#{}): {}", ticket_list_message, ticket.id, ticket.title);
                     }
+                    Self::respond(&self, &command, ctx, &ticket_list_message).await;
                 } else {
-                    reply = String::from("Only mods can list open tickets.\nThis incident will be reported.");
+                    Self::respond_eph(&self, ctx, &command, String::from("Only mods can list open tickets.\nThis incident will be reported.")).await;
                 }
             }
 
             "listall" => {
                 if Self::is_mod(&ctx, &command).await {
                     let tickets: Vec<Ticket> = self.dbms.get_tickets(false).await.expect("Failed to get tickets");
+                    let mut ticket_list_message: String = String::new();
 
                     for ticket in tickets {
                         let is_open_emoji: &str = if ticket.is_open {
@@ -252,24 +255,19 @@ impl Handler {
                             ":x:"
                         };
 
-                        reply = format!("{}\n(#{}): {} {}", reply, ticket.id, ticket.title, is_open_emoji);
+                        ticket_list_message = format!("{}\n(#{}): {} {}", ticket_list_message, ticket.id, ticket.title, is_open_emoji);
                     }
+                    self.respond(&command, ctx, &ticket_list_message).await;
                 } else {
-                    reply = String::from("Only mods can list all tickets.\nThis incident will be reported.");
+                    Self::respond_eph(&self, ctx, &command, String::from("Only mods can list all tickets.\nThis incident will be reported.")).await;
                 }
             }
 
             _ => {
-                self.respond(&command, &ctx, "Unknown command.").await;
+                self.respond_eph(ctx, &command, String::from("Unknown command. Error :(")).await;
             }
         }
-
-        self.respond(command, ctx, if reply != "" {
-            &reply
-        } else {
-            eprintln!("Error: No response was created. Command: ({} {:?})", &command.data.name, &command.data.options);
-            "Error :("
-        }).await;
+            
     }
 
     async fn create_ticket_channel(guild_id: GuildId, category_id: ChannelId, channel_name: &str, allowed_users: Vec<UserId>, ctx: &Context) -> Result<ChannelId, Box<dyn std::error::Error>> {
@@ -326,6 +324,18 @@ impl Handler {
             r.kind(InteractionResponseType::ChannelMessageWithSource)
                 .interaction_response_data(|m| m.content(reply))
         }).await;
+    }
+
+    async fn respond_eph(&self, ctx: &Context, command: &ApplicationCommandInteraction, msg: String) {
+        if let Err(e) = command.create_interaction_response(&ctx.http, |resp| {
+            resp.kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|data| {
+                    data.content(msg)
+                        .flags(InteractionApplicationCommandCallbackDataFlags::EPHEMERAL)
+                })
+        }).await {
+            eprintln!("Failed to reply\n{}", e)
+        }
     }
 
     async fn get_option(&self, command: &ApplicationCommandInteraction, option: &str) -> String {
