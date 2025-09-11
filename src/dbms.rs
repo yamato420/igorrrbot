@@ -50,16 +50,17 @@ impl DBMS {
         Ok(id)
     }
 
-    pub async fn close_ticket(&self, id: u32) -> Result<(), Error> {
+    pub async fn close_ticket(&self, id: u32) -> Result<bool, Error> {
         let a: i32 = id as i32;
-        self.client.execute(
+        let rows: u64 = self.client.execute(
             "
             UPDATE tickets
             SET is_open = false
-            WHERE id = ($1)
+            WHERE id = $1 AND is_open = true
             ",
             &[&a]).await?;
-        Ok(())
+
+        Ok(rows > 0)
     }
 
     pub async fn get_tickets(&self, show_only_open_tickets: bool) -> Result<Vec<Ticket>, Error> {

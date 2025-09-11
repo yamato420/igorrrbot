@@ -2,13 +2,13 @@ use regex::Regex;
 use serenity::{
     async_trait, builder::CreateApplicationCommandPermissionData, framework::standard::macros::group, model::{
         application::{command::CommandOptionType,
-        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::{Guild, Member}, id::{ChannelId, CommandId, GuildId, RoleId, UserId}, prelude::{command::CommandPermissionType, ChannelType, GuildChannel, PermissionOverwrite, PermissionOverwriteType}, Permissions
+        interaction::{application_command::ApplicationCommandInteraction, Interaction, InteractionResponseType}}, gateway::Ready, guild::{Guild, Member}, id::{ChannelId, CommandId, GuildId, RoleId, UserId}, interactions::InteractionApplicationCommandCallbackDataFlags, prelude::{command::CommandPermissionType, ChannelType, GuildChannel, PermissionOverwrite, PermissionOverwriteType}, Permissions
     }, prelude::*
 };
 use dotenvy::dotenv;
 use std::{env, str::FromStr};
 
-use crate::dbms::DBMS;
+use crate::{dbms::DBMS};
 use crate::ticket::Ticket;
 
 #[group]
@@ -45,7 +45,7 @@ impl EventHandler for Handler {
         });
 
         let _ = guild_id.create_application_command(&ctx.http, |cmd| {
-            cmd.name("open")
+            cmd.name("ticket")
                 .description("Open a ticket")
                 .create_option(|o| {
                     o.name("title")
@@ -69,7 +69,7 @@ impl EventHandler for Handler {
 
         let _ = guild_id.create_application_command(&ctx.http, |cmd| {
             cmd.name("close")
-                .description("Close a ticket")
+                .description("[MODS ONLY] Close a ticket")
                 .create_option(|o| {
                     o.name("id")
                     .description("Ticket ID")
@@ -131,10 +131,9 @@ impl EventHandler for Handler {
 impl Handler {
     pub async fn handle_application_command(&self, ctx: &Context, command: &ApplicationCommandInteraction) {
         dotenv().ok();
-        let mut reply: String = String::new();
 
         match command.data.name.as_str() {
-            "open" => {
+            "ticket" => {
                 let author: String = command.user.id.to_string();
                 let title: String = String::from(self.get_option(&command, "title").await.trim_matches('"'));
                 let description: String = String::from(self.get_option(&command, "description").await.trim_matches('"'));
@@ -153,10 +152,10 @@ impl Handler {
 
                         let guild_id: GuildId = command.guild_id.unwrap();
                         let category_id: ChannelId = ChannelId::from_str(
-                            &Self::get_env_var("TEST_CATEGORY_ID")
+                            &Self::get_env_var("TEST_OPEN_CATEGORY_ID")
                             .await)
                             .unwrap();
-                        let channel_name: String = format!("(#{}): {}", &ticket.id, &ticket.title);
+                        let channel_name: String = format!("{}-{}", &ticket.id, &ticket.title);
                         let mut allowed_users: Vec<UserId> = Vec::new();
                         allowed_users.push(command.user.id);
                         
@@ -176,15 +175,13 @@ impl Handler {
                             }
                         }
 
-                        let channel: ChannelId = Self::create_ticket_channel(guild_id, category_id, &channel_name, allowed_users, &ctx).await.expect("Failed to create channel");
-                        let _ = channel.say(&ctx.http, Self::display_ticket(&ticket).await).await;
+                        let channel: ChannelId = Self::create_ticket_channel(guild_id, category_id, &channel_name, allowed_users.clone(), &ctx).await.expect("Failed to create channel");
+                        let _ = channel.say(&ctx.http, Self::display_ticket(&ticket, Some(allowed_users)).await).await;
 
-                        reply = format!("Opened ticket (#{}): {}.", id, title);
-                        println!("{}", reply);
+                        Self::respond_eph(&self, ctx, &command, format!("Opened ticket (#{}): {}.", id, title)).await;
                     },
-                    Err(e) => {
-                        reply = format!("Failed to open ticket {}.", title);
-                        eprintln!("{}\n{}", reply, e);
+                    Err(_) => {
+                        Self::respond_eph(&self, ctx, &command, format!("Failed to open ticket {}.", title)).await;
                     }
                 }
             }
@@ -195,18 +192,39 @@ impl Handler {
                         .await.parse::<u32>()
                         .unwrap_or(u32::max_value());
 
+                    let guild_id: GuildId = command.guild_id.unwrap();
+
                     match self.dbms.close_ticket(id).await {
-                        Ok(_) => {
-                            reply = format!("Closed ticket #{}.", id);
-                            println!("{}", reply);
+                        Ok(result) => {
+                            if result {
+                                dotenv().ok();
+
+                                let tickets: Vec<Ticket> = self.dbms.get_tickets(false).await.expect("Failed to get tickets");
+                                let closed_category_id_string: String = Self::get_env_var("TEST_CLOSED_CATEGORY_ID").await;
+                                let closed_category_id: ChannelId = ChannelId::from_str(&closed_category_id_string).unwrap();
+                                let ticket = tickets.iter().find(|t| t.id == id).expect(&format!("Ticket #{} not found.", id));
+                                let ticket_channel_title = format!("{}-{}", ticket.id, ticket.title);
+                                let channel_id: ChannelId = Self::get_channel_from_name(guild_id, &ctx, &ticket_channel_title).await.unwrap();
+
+                                let _ = match Self::close_ticket_channel(guild_id, channel_id, closed_category_id, ctx).await {
+                                    Ok(_) => {
+                                        Self::respond_eph(&self, ctx, &command, format!("Closed ticket #{}.", id)).await;
+                                    },
+                                    Err(_) => {
+                                        Self::respond_eph(&self, ctx, &command, format!("Failed to close ticket #{}.", id)).await;
+                                    }
+                                };
+
+                            } else {
+                                Self::respond_eph(&self, ctx, &command, format!("Invalid ticket ID.")).await;
+                            }
                         },
-                        Err(e) => {
-                            reply = format!("Failed to close ticket #{}.", id);
-                            eprintln!("{}\n{}", reply, e);
+                        Err(_) => {
+                            Self::respond_eph(&self, ctx, &command, format!("Failed to close ticket #{}.", id)).await;
                         }
                     }
                 } else {
-                    reply = String::from("Only mods can close tickets.\nThis incident will be reported.");
+                    Self::respond_eph(&self, ctx, &command, String::from("Only mods can close tickets.\nThis incident will be reported.")).await;
                 }
             }
 
@@ -221,29 +239,32 @@ impl Handler {
                 if tickets.iter().any(|t| t.id == id) {
                     for ticket in tickets {
                         if ticket.id == id {
-                            reply = Self::display_ticket(&ticket).await;
+                            Self::respond_eph(&self, ctx, &command, Self::display_ticket(&ticket, None).await).await;
                         }
                     }
                 } else {
-                    reply = format!("Invalid ticket ID.");
+                    Self::respond_eph(&self, ctx, &command, format!("Invalid ticket ID.")).await;
                 }
             }
 
             "list" => {
                 if Self::is_mod(&ctx, &command).await {
                     let tickets: Vec<Ticket> = self.dbms.get_tickets(true).await.expect("Failed to get tickets");
+                    let mut ticket_list_message: String = String::new();
 
                     for ticket in tickets {
-                        reply = format!("{}\n(#{}): {}", reply, ticket.id, ticket.title);
+                        ticket_list_message = format!("{}\n(#{}): {}", ticket_list_message, ticket.id, ticket.title);
                     }
+                    Self::respond(&self, &command, ctx, &ticket_list_message).await;
                 } else {
-                    reply = String::from("Only mods can list open tickets.\nThis incident will be reported.");
+                    Self::respond_eph(&self, ctx, &command, String::from("Only mods can list open tickets.\nThis incident will be reported.")).await;
                 }
             }
 
             "listall" => {
                 if Self::is_mod(&ctx, &command).await {
                     let tickets: Vec<Ticket> = self.dbms.get_tickets(false).await.expect("Failed to get tickets");
+                    let mut ticket_list_message: String = String::new();
 
                     for ticket in tickets {
                         let is_open_emoji: &str = if ticket.is_open {
@@ -252,35 +273,23 @@ impl Handler {
                             ":x:"
                         };
 
-                        reply = format!("{}\n(#{}): {} {}", reply, ticket.id, ticket.title, is_open_emoji);
+                        ticket_list_message = format!("{}\n(#{}): {} {}", ticket_list_message, ticket.id, ticket.title, is_open_emoji);
                     }
+                    self.respond(&command, ctx, &ticket_list_message).await;
                 } else {
-                    reply = String::from("Only mods can list all tickets.\nThis incident will be reported.");
+                    Self::respond_eph(&self, ctx, &command, String::from("Only mods can list all tickets.\nThis incident will be reported.")).await;
                 }
             }
 
             _ => {
-                self.respond(&command, &ctx, "Unknown command.").await;
+                self.respond_eph(ctx, &command, String::from("Unknown command. Error :(")).await;
             }
         }
-
-        self.respond(command, ctx, if reply != "" {
-            &reply
-        } else {
-            eprintln!("Error: No response was created. Command: ({} {:?})", &command.data.name, &command.data.options);
-            "Error :("
-        }).await;
+            
     }
 
     async fn create_ticket_channel(guild_id: GuildId, category_id: ChannelId, channel_name: &str, allowed_users: Vec<UserId>, ctx: &Context) -> Result<ChannelId, Box<dyn std::error::Error>> {
         dotenv().ok();
-
-        let mod_role_id: RoleId = RoleId(
-            Self::get_env_var("TEST_MOD_ROLE_ID")
-                .await
-                .parse::<u64>()
-                .expect("TEST_MOD_ROLE_ID must be a u64")
-        );
 
         let guild: Guild = guild_id.to_guild_cached(&ctx.cache).unwrap();
         let mut overwrites: Vec<PermissionOverwrite> = Vec::new();
@@ -292,12 +301,6 @@ impl Handler {
                 kind: PermissionOverwriteType::Member(user)
             })
         }
-
-        overwrites.push(PermissionOverwrite {
-            allow: Permissions::VIEW_CHANNEL,
-            deny: Permissions::empty(),
-            kind: PermissionOverwriteType::Role(mod_role_id)
-        });
 
         overwrites.push(PermissionOverwrite {
             allow: Permissions::empty(),
@@ -315,6 +318,42 @@ impl Handler {
         Ok(channel.id)
     }
 
+    async fn close_ticket_channel(guild_id: GuildId, channel_id: ChannelId, closed_category_id: ChannelId, ctx: &Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        dotenv().ok();
+
+        let mut overwrites: Vec<PermissionOverwrite> = Vec::new();
+
+        channel_id
+            .edit(&ctx.http, |c| c.permissions(Vec::new()))
+            .await?;
+
+        overwrites.push(PermissionOverwrite {
+            allow: Permissions::empty(),
+            deny: Permissions::VIEW_CHANNEL,
+            kind: PermissionOverwriteType::Role(RoleId(guild_id.into())),
+        });
+
+        channel_id.edit(&ctx.http, |ch| {
+            ch.category(closed_category_id)
+                .permissions(overwrites)
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_channel_from_name(guild_id: GuildId, ctx: &Context, channel_name: &str) -> Option<ChannelId> {
+        if let Ok(channels) = guild_id.channels(&ctx.http).await {
+            if let Some(channel) = channels
+                .values()
+                .find(|c| c.name.eq_ignore_ascii_case(channel_name)) {
+                    return Some(channel.id);
+                }
+        }
+
+        None
+    }
+
     async fn get_env_var(var: &str) -> String {
         env::var(&var).expect(
             &format!("Couldn't find {} environment variable", var)
@@ -326,6 +365,18 @@ impl Handler {
             r.kind(InteractionResponseType::ChannelMessageWithSource)
                 .interaction_response_data(|m| m.content(reply))
         }).await;
+    }
+
+    async fn respond_eph(&self, ctx: &Context, command: &ApplicationCommandInteraction, msg: String) {
+        if let Err(e) = command.create_interaction_response(&ctx.http, |resp| {
+            resp.kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|data| {
+                    data.content(msg)
+                        .flags(InteractionApplicationCommandCallbackDataFlags::EPHEMERAL)
+                })
+        }).await {
+            eprintln!("Failed to reply\n{}", e)
+        }
     }
 
     async fn get_option(&self, command: &ApplicationCommandInteraction, option: &str) -> String {
@@ -358,13 +409,28 @@ impl Handler {
         Self::has_role(&member, mod_role_id).await
     }
 
-    async fn display_ticket(ticket: &Ticket) -> String {
+    async fn display_ticket(ticket: &Ticket, related_users: Option<Vec<UserId>>) -> String {
         let is_open_emoji: String = String::from(if ticket.is_open {
             ":white_check_mark:"
         } else {
             ":x:"
         });
 
-        format!("### (#{}): __{}__\nAuthor: <@{}>\n\nDescription:\n{}\n\nopen: {}", ticket.id, ticket.title, ticket.author, ticket.description, is_open_emoji)
+        let mut related_user_string: String = String::new();
+
+        let related_users = match related_users {
+            Some(mut s) => s.split_off(1),
+            None => Vec::new(),
+        };
+
+        if related_users.iter().len() > 0 {
+            related_user_string = String::from("\nRelated Users:");
+        }
+
+        for user in related_users {
+            related_user_string = format!("{} <@{}>", related_user_string, user.0);
+        }
+
+        format!("### (#{}): __{}__\nAuthor: <@{}>{}\n\nDescription:\n{}\n\nopen: {}", ticket.id, ticket.title, ticket.author, related_user_string, ticket.description, is_open_emoji)
     }
 }
