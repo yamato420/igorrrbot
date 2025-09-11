@@ -1,23 +1,27 @@
-use serenity::{
-    client::Client,
-    framework::standard::StandardFramework, prelude::GatewayIntents,
-};
 use std::env;
 use dotenvy::dotenv;
-use tokio_postgres::{Error};
+use poise::serenity_prelude::{self as serenity, *};
 
 mod dbms;
-mod commands;
 mod ticket;
+mod commands;
+mod utils;
+use dbms::DBMS;
 
-use crate::{commands::*, dbms::DBMS};
+
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Context<'a> = poise::Context<'a, Data, Error>;
+
+struct Data {
+    dbms: DBMS
+}
+
 
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     dotenv().ok();
 
-    // Required env vars: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
     let db_host: String = env::var("DB_HOST").expect("Couldn't find DB_HOST environment variable");
     let db_user: String = env::var("DB_USER").expect("Couldn't find DB_USER environment variable");
     let db_password: String = env::var("DB_PASSWORD").expect("Couldn't find DB_PASSWORD environment variable");
@@ -26,21 +30,49 @@ async fn main() -> Result<(), Error> {
     let dbms: DBMS = DBMS::new(&format!("host={} user={} password={} dbname={}", db_host, db_user, db_password, db_name)).await?;
     dbms.create_table().await?;
 
-    // Required env vars: BOT_TOKEN, TEST_GUILD_ID, TEST_MOD_ROLE_ID, TEST_CATEGORY_ID
     let token: String = env::var("BOT_TOKEN").expect("Couldn't find BOT_TOKEN environment variable");
-    let handler: Handler = Handler { dbms };
-    let framework: StandardFramework = StandardFramework::new().group(&GENERAL_GROUP);
 
-    let intents: GatewayIntents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::GUILDS | GatewayIntents::DIRECT_MESSAGES;
-    let mut client: Client = Client::builder(&token, intents)
+    let options = poise::FrameworkOptions {
+        commands: vec![
+            commands::ticket(),
+            commands::open(),
+            commands::close(),
+            commands::show(),
+            commands::list(),
+            commands::listall(),
+        ],
+        command_check: Some(|ctx: Context| {
+            Box::pin(async move {
+                println!("{:?}", ctx.command().checks);
+                // if ctx.command().checks {
+                //     return Ok(false);
+                // }
+                Ok(true)
+            })
+        }),
+        ..Default::default()
+    };
+
+    let framework = poise::Framework::builder()
+        .setup(move |ctx, _ready, framework| {
+            Box::pin(async move {
+                println!("{} is connected! 🫡", _ready.user.name);
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(Data {
+                    dbms
+                })
+            })
+        })
+        .options(options)
+        .build();
+
+    let intents: GatewayIntents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::GUILD_MEMBERS;
+
+    let client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
-        .event_handler(handler)
-        .await
-        .expect("Couldn't create client");
+        .await;
 
-    if let Err(e) = client.start().await {
-        eprintln!("Client error: {:?}", e);
-    }
+    client.unwrap().start().await.expect("Failed to create client");
 
     Ok(())
 }
