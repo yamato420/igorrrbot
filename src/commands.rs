@@ -72,11 +72,11 @@ pub async fn open(
             let new_channel: ChannelId = create_ticket_channel(guild_id, category_id, &channel_name, allowed_users, &ctx).await.unwrap();
             new_channel.say(&ctx, format!("{}\n<@&{}>", display_ticket(&ticket, None).await, mod_role_id)).await.unwrap();
 
-            info!("{}", format!("Opened ticket (#{}): {}.", id, title));
+            info!("{} opened ticket (#{}): {}.", author.to_string(), id, title);
             respond(&ctx, format!("Opened ticket (#{}): {}.", id, title), true).await;
         }
         Err(_) => {
-            error!("{}", format!("Failed to open ticket {}.", title));
+            error!("Failed to open ticket {}", title);
             respond(&ctx, format!("Failed to open ticket {}.", title), true).await;
         }
     }
@@ -98,6 +98,7 @@ pub async fn close(
     match ctx.data().dbms.close_ticket(id).await {
         Ok(result) => {
             if result {
+                let author: UserId = ctx.author().id;
                 let guild_id: GuildId = ctx.guild_id().unwrap();
                 let tickets: Vec<Ticket> = ctx.data().dbms.get_tickets(false).await.expect("Failed to get tickets");
                 let closed_category_id: ChannelId = ChannelId::from_str(&get_env_var("CLOSED_CATEGORY_ID").await).unwrap();
@@ -107,22 +108,22 @@ pub async fn close(
 
                 let _ = match close_ticket_channel(guild_id, channel_id, closed_category_id, &ctx).await {
                     Ok(_) => {
-                        info!("{}", format!("Closed ticket #{}.", id));
+                        info!("{} closed ticket #{}.", author.to_string(), id);
                         respond(&ctx, format!("Closed ticket #{}.", id), true).await;
                     },
                     Err(_) => {
-                        error!("{}", format!("Failed to close ticket #{}.", id));
+                        error!("Failed to close ticket #{}", id);
                         respond(&ctx, format!("Failed to close ticket #{}.", id), true).await;
                     }
                 };
 
             } else {
-                warn!("{}", format!("close: Invalid ticket ID {}", id));
+                warn!("close: Invalid ticket ID {}", id);
                 respond(&ctx, format!("Invalid ticket ID."), true).await;
             }
         }
         Err(_) => {
-            error!("{}", format!("Failed to close ticket #{}.", id));
+            error!("Failed to close ticket #{}", id);
             respond(&ctx, format!("Failed to close ticket #{}.", id), true).await;
         }
     }
@@ -152,7 +153,7 @@ pub async fn show(
             }
         }
     } else {
-        warn!("{}", format!("show: Invalid ticket ID {}", id));
+        warn!("show: Invalid ticket ID {}", id);
         respond(&ctx, format!("Invalid ticket ID."), true).await;
     }
 
