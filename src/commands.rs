@@ -36,14 +36,16 @@ pub async fn open(
     let related_users_option: String = related_users_option.unwrap_or_default().trim_matches('"').to_string();
     let related_users: Vec<&str> = related_users_option.split_whitespace().collect();
 
-    match ctx.data().dbms.insert_ticket(&author.to_string(), &title, &description).await {
+    match ctx.data().dbms.insert_ticket(author.get(), &title, &description).await {
         Ok(id) => {
-            let ticket: Ticket = Ticket {
+            let author_u64: u64 = author.get();
+            let mut ticket: Ticket = Ticket {
                 id,
-                author: author.to_string(),
+                author: author_u64,
                 title: title.clone(),
                 description: description.clone(),
                 is_open: true,
+                channel_id: 0
             };
 
             let guild_id: GuildId = ctx.guild_id().unwrap();
@@ -69,14 +71,16 @@ pub async fn open(
                 }
             }
 
-            let new_channel: ChannelId = create_ticket_channel(guild_id, category_id, &channel_name, allowed_users, &ctx).await.unwrap();
+            let new_channel: ChannelId = create_ticket_channel(&ctx, guild_id, category_id, &channel_name, allowed_users).await.unwrap();
+            ticket.channel_id = new_channel.get();
+            ctx.data().dbms.set_channel_id(ticket.id as i32, new_channel.get().to_string()).await.expect(&format!("Failed to set channel_id for ticket {}", ticket.id));
             new_channel.say(&ctx, format!("{}\n<@&{}>", display_ticket(&ticket, None).await, mod_role_id)).await.unwrap();
 
             info!("{} opened ticket (#{}): {}.", author.to_string(), id, title);
-            respond(&ctx, format!("Opened ticket (#{}): {}.", id, title), true).await;
+            respond(&ctx, format!("Opened ticket <#{}>", new_channel.to_string()), true).await;
         }
-        Err(_) => {
-            error!("Failed to open ticket {}", title);
+        Err(e) => {
+            error!("Failed to open ticket {}: {}", title, e);
             respond(&ctx, format!("Failed to open ticket {}.", title), true).await;
         }
     }
@@ -93,7 +97,7 @@ pub async fn open(
     )]
 pub async fn close(
     ctx: Context<'_>,
-    #[description = "Ticket ID"] id: u32
+    #[description = "Ticket ID"] id: u64
 ) -> Result<(), Error> {
     match ctx.data().dbms.close_ticket(id).await {
         Ok(result) => {
@@ -103,8 +107,7 @@ pub async fn close(
                 let tickets: Vec<Ticket> = ctx.data().dbms.get_tickets(false).await.expect("Failed to get tickets");
                 let closed_category_id: ChannelId = ChannelId::from_str(&get_env_var("CLOSED_CATEGORY_ID").await).unwrap();
                 let ticket: &Ticket = tickets.iter().find(|t| t.id == id).expect(&format!("Ticket #{} not found.", id));
-                let ticket_channel_title: String = format!("{}-{}", ticket.id, ticket.title);
-                let channel_id: ChannelId = get_channel_from_name(guild_id, &ctx, &ticket_channel_title).await.expect("Failed to find channel");
+                let channel_id: ChannelId = ChannelId::new(ctx.data().dbms.get_channel_id(ticket.id as i32).await.unwrap());
 
                 let _ = match close_ticket_channel(guild_id, channel_id, closed_category_id, &ctx).await {
                     Ok(_) => {
@@ -139,13 +142,13 @@ pub async fn close(
     )]
 pub async fn show(
     ctx: Context<'_>,
-    #[description = "Ticket ID"] id: u32
+    #[description = "Ticket ID"] id: u64
 ) -> Result<(), Error> {
     let tickets: Vec<Ticket> = ctx.data().dbms.get_tickets(false).await.expect("Failed to get tickets");
 
     if tickets.iter().any(|t| t.id == id) {
         for ticket in tickets {
-            let author_id: UserId = UserId::new(ticket.author.parse::<u64>().unwrap());
+            let author_id: UserId = UserId::new(ticket.author as u64);
 
             if ticket.id == id && ctx.author().id == author_id {
                 respond(&ctx, display_ticket(&ticket, None).await, true).await;
