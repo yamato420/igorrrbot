@@ -8,9 +8,8 @@ mod commands;
 mod utils;
 use dbms::DBMS;
 
+use crate::utils::{get_env_var, Error};
 
-type Error = Box<dyn std::error::Error + Send + Sync>;
-type Context<'a> = poise::Context<'a, Data, Error>;
 
 struct Data {
     dbms: DBMS
@@ -22,34 +21,20 @@ struct Data {
 async fn main() -> Result<(), Error> {
     dotenv().ok();
 
-    let db_host: String = env::var("DB_HOST").expect("Couldn't find DB_HOST environment variable");
-    let db_user: String = env::var("DB_USER").expect("Couldn't find DB_USER environment variable");
-    let db_password: String = env::var("DB_PASSWORD").expect("Couldn't find DB_PASSWORD environment variable");
-    let db_name: String = env::var("DB_NAME").expect("Couldn't find DB_NAME environment variable");
+    let db_host: String = get_env_var("DB_HOST").await;
+    let db_user: String = get_env_var("DB_USER").await;
+    let db_password: String = get_env_var("DB_PASSWORD").await;
+    let db_name: String = get_env_var("DB_NAME").await;
 
     let dbms: DBMS = DBMS::new(&format!("host={} user={} password={} dbname={}", db_host, db_user, db_password, db_name)).await?;
     dbms.create_table().await?;
 
-    let token: String = env::var("BOT_TOKEN").expect("Couldn't find BOT_TOKEN environment variable");
+    let token: String = get_env_var("BOT_TOKEN").await;
 
     let options = poise::FrameworkOptions {
         commands: vec![
             commands::ticket(),
-            commands::open(),
-            commands::close(),
-            commands::show(),
-            commands::list(),
-            commands::listall(),
         ],
-        command_check: Some(|ctx: Context| {
-            Box::pin(async move {
-                println!("{:?}", ctx.command().checks);
-                // if ctx.command().checks {
-                //     return Ok(false);
-                // }
-                Ok(true)
-            })
-        }),
         ..Default::default()
     };
 
