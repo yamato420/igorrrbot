@@ -27,38 +27,53 @@ impl DBMS {
             author VARCHAR NOT NULL,
             title VARCHAR NOT NULL,
             description VARCHAR NOT NULL,
-            is_open BOOLEAN NOT NULL
+            is_open BOOLEAN NOT NULL,
+            channel_id VARCHAR NOT NULL
             )",
             &[],
         ).await?;
         Ok(())
     }
 
-    pub async fn insert_ticket(&self, author: &str, title: &str, description: &str) -> Result<u32, Error> {
+    pub async fn insert_ticket(&self, author: u64, title: &str, description: &str) -> Result<u64, Error> {
         let row: Row = self.client.query_one(
             "
             INSERT INTO tickets
-            (author, title, description, is_open)
-            VALUES ($1, $2, $3, true)
+            (author, title, description, is_open, channel_id)
+            VALUES ($1, $2, $3, true, 0)
             RETURNING id
             ", 
-            &[&author, &title, &description],
+            &[&author.to_string(), &title, &description],
         ).await?;
 
         let id: i32 = row.get(0);
-        let id: u32 = id as u32;
+        let id: u64 = id as u64;
         Ok(id)
     }
 
-    pub async fn close_ticket(&self, id: u32) -> Result<bool, Error> {
-        let a: i32 = id as i32;
+    pub async fn set_channel_id(&self, id: i32, channel_id: String) -> Result<(), Error> {
+        self.client.execute(
+            "
+            UPDATE tickets
+            SET channel_id = $1
+            WHERE id = $2
+            ",
+            &[&channel_id, &id]
+        ).await?;
+
+        Ok(())
+    }
+
+    pub async fn close_ticket(&self, id: u64) -> Result<bool, Error> {
+        let id: i32 = id as i32;
         let rows: u64 = self.client.execute(
             "
             UPDATE tickets
             SET is_open = false
             WHERE id = $1 AND is_open = true
             ",
-            &[&a]).await?;
+            &[&id]
+        ).await?;
 
         Ok(rows > 0)
     }
@@ -79,17 +94,35 @@ impl DBMS {
         let mut tickets: Vec<Ticket> = Vec::new();
 
         for row in rows {
-            let id: u32 = row.get::<_, i32>(0) as u32;
+            let id: u64 = row.get::<_, i32>(0) as u64;
+            let author: u64 = row.get::<_, String>(1).parse::<u64>().expect("author must be u64");
+            let channel_id: u64 = row.get::<_, String>(5).parse::<u64>().expect("channel_id must be u64");
 
             tickets.push(Ticket {
-                id: id,
-                author: row.get(1),
+                id,
+                author,
                 title: row.get(2),
                 description: row.get(3),
-                is_open: row.get(4)
+                is_open: row.get(4),
+                channel_id
             });
         }
 
         Ok(tickets)
+    }
+
+    pub async fn get_channel_id(&self, id: i32) -> Result<u64, Error> {
+        let row: Row = self.client.query_one(
+            "
+            SELECT channel_id FROM tickets
+            WHERE id = $1
+            ",
+            &[&id]
+        ).await?;
+
+        let channel_id: String = row.get(0);
+        let channel_id: u64 = channel_id.parse::<u64>().expect("channel_id must be u64");
+
+        Ok(channel_id)
     }
 }

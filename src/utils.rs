@@ -8,13 +8,13 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 
-pub async fn create_ticket_channel(guild_id: GuildId, category_id: ChannelId, channel_name: &str, allowed_users: Vec<UserId>, ctx: &Context<'_>) -> Result<ChannelId, Box<dyn std::error::Error>> {
+pub async fn create_ticket_channel(ctx: &Context<'_>, guild_id: GuildId, category_id: ChannelId, channel_name: &str, allowed_users: Vec<UserId>) -> Result<ChannelId, Box<dyn std::error::Error>> {
     dotenv().ok();
 
     let mod_role_id: u64 = get_env_var("MOD_ROLE_ID")
         .await
         .parse::<u64>()
-        .expect("MOD_ROLE_ID must be a u64");
+        .expect("MOD_ROLE_ID must be u64");
 
     let mut overwrites: Vec<PermissionOverwrite> = Vec::new();
 
@@ -53,6 +53,7 @@ pub async fn close_ticket_channel(guild_id: GuildId, channel_id: ChannelId, clos
     dotenv().ok();
 
     let mut overwrites: Vec<PermissionOverwrite> = Vec::new();
+    let mod_role_id: RoleId = RoleId::new(get_env_var("MOD_ROLE_ID").await.parse::<u64>().unwrap());
 
     let builder: EditChannel<'_> = EditChannel::new().permissions(Vec::new());
 
@@ -66,23 +67,17 @@ pub async fn close_ticket_channel(guild_id: GuildId, channel_id: ChannelId, clos
         kind: PermissionOverwriteType::Role(RoleId::new(guild_id.into())),
     });
 
+    overwrites.push(PermissionOverwrite {
+        allow: Permissions::VIEW_CHANNEL,
+        deny: Permissions::empty(),
+        kind: PermissionOverwriteType::Role(mod_role_id),
+    });
+
     let builder = EditChannel::new().category(closed_category_id).permissions(overwrites);
 
     channel_id.edit(&ctx.http(), builder).await?;
 
     Ok(())
-}
-
-pub async fn get_channel_from_name(guild_id: GuildId, ctx: &Context<'_>, channel_name: &str) -> Option<ChannelId> {
-    if let Ok(channels) = guild_id.channels(&ctx.http()).await {
-        if let Some(channel) = channels
-            .values()
-            .find(|c| c.name.eq_ignore_ascii_case(channel_name)) {
-                return Some(channel.id);
-            }
-    }
-
-    None
 }
 
 pub async fn get_env_var(var: &str) -> String {
@@ -109,7 +104,7 @@ pub async fn is_mod(ctx: Context<'_>) -> Result<bool, Error> {
         get_env_var("MOD_ROLE_ID")
             .await
             .parse::<u64>()
-            .expect("MOD_ROLE_ID must be a u64")
+            .expect("MOD_ROLE_ID must be u64")
     );
 
     let member: Member = ctx.author_member().await.unwrap().into_owned();
