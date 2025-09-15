@@ -1,5 +1,6 @@
-use std::env;
+use chrono::Local;
 use dotenvy::dotenv;
+use log::info;
 use poise::serenity_prelude::{self as serenity, *};
 
 mod dbms;
@@ -15,10 +16,29 @@ struct Data {
     dbms: DBMS
 }
 
-
+fn configure_logging() {
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "[{}][{}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                message
+            ))
+        })
+        .level(log::LevelFilter::Info)
+        .filter(move |metadata| {
+            metadata.target().starts_with(env!("CARGO_PKG_NAME"))
+        })
+        .chain(std::io::stdout())
+        .chain(fern::log_file("igorrrbot.log").unwrap())
+        .apply()
+        .unwrap();
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    configure_logging();
     dotenv().ok();
 
     let db_host: String = get_env_var("DB_HOST").await;
@@ -41,7 +61,7 @@ async fn main() -> Result<(), Error> {
     let framework = poise::Framework::builder()
         .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
-                println!("{} is connected! 🫡", _ready.user.name);
+                info!("{} is connected! 🫡", _ready.user.name);
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 Ok(Data {
                     dbms
