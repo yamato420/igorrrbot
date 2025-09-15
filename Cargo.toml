@@ -1,10 +1,13 @@
 [package]
-name = "igorrrbot-poise"
-version = "0.1.0"
+name = "igorrrbot"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]
+chrono = "0.4.42"
 dotenvy = "0.15.7"
+fern = "0.7.1"
+log = "0.4.28"
 poise = "0.6.1"
 regex = "1.11.2"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }

@@ -4,8 +4,8 @@ use poise::{serenity_prelude::*, CreateReply};
 
 use crate::{ticket::Ticket, Data};
 
-type Error = Box<dyn std::error::Error + Send + Sync>;
-type Context<'a> = poise::Context<'a, Data, Error>;
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 
 pub async fn create_ticket_channel(guild_id: GuildId, category_id: ChannelId, channel_name: &str, allowed_users: Vec<UserId>, ctx: &Context<'_>) -> Result<ChannelId, Box<dyn std::error::Error>> {
@@ -104,7 +104,7 @@ pub async fn has_role(member: &Member, role_id: RoleId) -> bool {
     member.roles.contains(&role_id)
 }
 
-pub async fn is_mod(ctx: &Context<'_>) -> bool {
+pub async fn is_mod(ctx: Context<'_>) -> Result<bool, Error> {
     let mod_role_id: RoleId = RoleId::new(
         get_env_var("MOD_ROLE_ID")
             .await
@@ -114,7 +114,7 @@ pub async fn is_mod(ctx: &Context<'_>) -> bool {
 
     let member: Member = ctx.author_member().await.unwrap().into_owned();
 
-    has_role(&member, mod_role_id).await
+    Ok(has_role(&member, mod_role_id).await)
 }
 
 pub async fn display_ticket(ticket: &Ticket, related_users: Option<Vec<UserId>>) -> String {
